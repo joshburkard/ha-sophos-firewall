@@ -1,0 +1,24 @@
+{
+    "config": {
+        "step": {
+            "user": {
+            "title": "Sophos Firewall",
+            "description": "Set up your Sophos Firewall integration. Make sure API access is enabled on your firewall and the user has appropriate permissions.",
+            "data": {
+                "host": "Host (IP address or hostname)",
+                "username": "API Username",
+                "password": "API Password", 
+                "port": "API Port (default: 4444)",
+                "verify_ssl": "Verify SSL Certificate"
+            }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to Sophos Firewall. Check the logs for detailed error information. Common issues: wrong host/port, API not enabled, incorrect credentials, SSL certificate problems.",
+            "unknown": "Unexpected error occurred. Check the Home Assistant logs for more details."
+        },
+        "abort": {
+            "already_configured": "Device is already configured"
+        }
+    }
+}

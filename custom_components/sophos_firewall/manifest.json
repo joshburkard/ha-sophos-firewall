@@ -1,0 +1,13 @@
+{
+    "domain": "sophos_firewall",
+    "name": "Sophos Firewall",
+    "codeowners": ["@joshburkard"],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://github.com/joshburkard/sophos_firewall",
+    "integration_type": "hub",
+    "iot_class": "local_polling",
+    "issue_tracker": "https://github.com/joshburkard/sophos_firewall/issues",
+    "requirements": ["aiohttp>=3.8.0"],
+    "version": "0.0.1"
+  }
