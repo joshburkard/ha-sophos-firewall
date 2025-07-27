@@ -25,7 +25,8 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
     
     entities = []
-    for rule in coordinator.data:
+    rules_data = coordinator.data.get("rules", [])
+    for rule in rules_data:
         entities.append(SophosFirewallRuleSwitch(coordinator, rule, config_entry))
     
     async_add_entities(entities, update_before_add=True)
@@ -57,7 +58,8 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool:
         """Return true if the switch is on."""
         # Find current rule data in coordinator
-        for rule in self.coordinator.data:
+        rules_data = self.coordinator.data.get("rules", [])
+        for rule in rules_data:
             if rule["name"] == self._rule_data["name"]:
                 return rule.get("enabled", False)
         return False
@@ -66,7 +68,8 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
         # Find current rule data in coordinator
-        for rule in self.coordinator.data:
+        rules_data = self.coordinator.data.get("rules", [])
+        for rule in rules_data:
             if rule["name"] == self._rule_data["name"]:
                 return {
                     "description": rule.get("description", ""),
@@ -107,4 +110,3 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
-        

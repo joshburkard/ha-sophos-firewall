@@ -17,7 +17,7 @@ from .sophos_api import SophosFirewallAPI
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Sophos Firewall from a config entry."""
@@ -76,6 +76,6 @@ class SophosFirewallDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         """Update data via library."""
         try:
-            return await self.api.get_firewall_rules()
+            return await self.api.get_all_monitoring_data()
         except Exception as exception:
             raise UpdateFailed(exception) from exception

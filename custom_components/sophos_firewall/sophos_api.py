@@ -92,9 +92,10 @@ class SophosFirewallAPI:
         
         # Try different API formats in order of preference
         api_formats = [
-            "FirewallRule",    # Most common format
-            "SecurityPolicy",  # v17+
+            "FirewallRule",    # Most common format - confirmed working
             "Policy",          # Alternative
+            "Rule",            # Generic
+            "SecurityPolicy",  # v17+ - confirmed NOT working
             "System"           # Basic test
         ]
         
@@ -229,16 +230,9 @@ class SophosFirewallAPI:
             elif code and code != "200":
                 raise SophosFirewallAPIError(f"API Error {code}: {message}")
         
-        # Parse firewall rules from different possible locations
+        # Parse firewall rules
         rules = []
-        
-        # Try different rule element names based on Sophos version
-        rule_paths = [
-            ".//FirewallRule",    # Most common - your firewall uses this
-            ".//SecurityPolicy",  # v17+
-            ".//Policy",          # Alternative
-            ".//Rule"             # Generic
-        ]
+        rule_paths = [".//FirewallRule", ".//SecurityPolicy", ".//Policy", ".//Rule"]
         
         rule_elements = []
         for path in rule_paths:
@@ -257,11 +251,7 @@ class SophosFirewallAPI:
                 import copy
                 rule["full_xml_data"] = copy.deepcopy(rule_elem)
                 
-                # Log all child elements for debugging
-                for child in rule_elem:
-                    _LOGGER.debug("  Child element: %s = %s", child.tag, child.text)
-                
-                # Basic rule information - try different field names
+                # Basic rule information
                 name_elem = rule_elem.find("Name")
                 if name_elem is not None:
                     rule["name"] = name_elem.text
@@ -270,21 +260,20 @@ class SophosFirewallAPI:
                 # Status/enabled field
                 status_elem = rule_elem.find("Status")
                 if status_elem is not None:
-                    # Sophos uses "Enable"/"Disable" 
                     rule["enabled"] = status_elem.text == "Enable"
-                    _LOGGER.debug("  Rule enabled: %s (from '%s')", rule["enabled"], status_elem.text)
+                    _LOGGER.debug("  Rule enabled: %s", rule["enabled"])
                 
                 # Description
                 description_elem = rule_elem.find("Description")
                 if description_elem is not None:
                     rule["description"] = description_elem.text or ""
                 
-                # Policy type and action - need to look in nested policy elements
+                # Policy type
                 policy_type_elem = rule_elem.find("PolicyType")
                 if policy_type_elem is not None:
                     rule["policy_type"] = policy_type_elem.text
                 
-                # Action is nested in NetworkPolicy or UserPolicy
+                # Action
                 action_elem = rule_elem.find(".//Action")
                 if action_elem is not None:
                     rule["action"] = action_elem.text
@@ -322,100 +311,246 @@ class SophosFirewallAPI:
                 if rule.get("name"):
                     rules.append(rule)
                     _LOGGER.debug("Added rule: %s", rule["name"])
-                else:
-                    _LOGGER.warning("Skipping rule without name")
         
         # Parse firewall rule groups
         groups = []
         group_elements = root.findall(".//FirewallRuleGroup")
         
         if group_elements:
-            _LOGGER.debug("Found %d FirewallRuleGroup elements", len(group_elements))
-            
-            for i, group_elem in enumerate(group_elements):
-                _LOGGER.debug("Processing group element %d: %s", i, group_elem.tag)
+            for group_elem in group_elements:
                 group = {}
-                
-                # Store the full XML element for later use
                 import copy
                 group["full_xml_data"] = copy.deepcopy(group_elem)
                 
-                # Group name
                 name_elem = group_elem.find("Name")
                 if name_elem is not None:
                     group["name"] = name_elem.text
-                    _LOGGER.debug("  Group name: %s", group["name"])
                 
-                # Group description
                 description_elem = group_elem.find("Description")
                 if description_elem is not None:
                     group["description"] = description_elem.text or ""
                 
-                # Policy type
                 policy_type_elem = group_elem.find("Policytype")
                 if policy_type_elem is not None:
                     group["policy_type"] = policy_type_elem.text
                 
-                # Transaction ID
                 group["transactionid"] = group_elem.get("transactionid", "")
                 
-                # Rules in this group
                 group_rules = []
                 for policy_elem in group_elem.findall(".//SecurityPolicyList/SecurityPolicy"):
                     if policy_elem.text:
                         group_rules.append(policy_elem.text)
-                        _LOGGER.debug("  Group rule: %s", policy_elem.text)
                 
                 group["rules"] = group_rules
                 
                 if group.get("name"):
                     groups.append(group)
-                    _LOGGER.debug("Added group: %s with %d rules", group["name"], len(group_rules))
+
+        # Parse interface statistics
+        interface_stats = {}
+        for stats_elem in root.findall(".//InterfaceStatistics"):
+            name_elem = stats_elem.find("Name")
+            usage_elem = stats_elem.find("Usage")
+            
+            if name_elem is not None and usage_elem is not None:
+                interface_name = name_elem.text
+                try:
+                    usage_value = int(usage_elem.text)
+                    interface_stats[f"{interface_name}_usage"] = usage_value
+                except (ValueError, TypeError):
+                    pass
         
+        # Parse interface details
+        interface_details = {}
+        for interface_elem in root.findall(".//Interface"):
+            name_elem = interface_elem.find("Name")
+            if name_elem is not None:
+                interface_name = name_elem.text
+                
+                status_elem = interface_elem.find("InterfaceStatus")
+                if status_elem is not None:
+                    interface_details[f"{interface_name}_status"] = status_elem.text
+                
+                speed_elem = interface_elem.find("Status")
+                if speed_elem is not None:
+                    interface_details[f"{interface_name}_connection"] = speed_elem.text
+                
+                ip_elem = interface_elem.find("IPAddress")
+                if ip_elem is not None:
+                    interface_details[f"{interface_name}_ip"] = ip_elem.text
+                
+                zone_elem = interface_elem.find("NetworkZone")
+                if zone_elem is not None:
+                    interface_details[f"{interface_name}_zone"] = zone_elem.text
+        
+        # Parse zone information
+        zones = {}
+        zone_count = 0
+        
+        for zone_elem in root.findall(".//Zone"):
+            zone_count += 1
+            name_elem = zone_elem.find("Name")
+            type_elem = zone_elem.find("Type")
+            
+            if name_elem is not None:
+                zone_name = name_elem.text
+                zones[f"zone_{zone_name}_type"] = type_elem.text if type_elem is not None else "Unknown"
+                
+                https_elem = zone_elem.find(".//HTTPS")
+                ssh_elem = zone_elem.find(".//SSH")
+                
+                if https_elem is not None:
+                    zones[f"zone_{zone_name}_https"] = https_elem.text == "Enable"
+                if ssh_elem is not None:
+                    zones[f"zone_{zone_name}_ssh"] = ssh_elem.text == "Enable"
+        
+        zones["total_zones"] = zone_count
+
+        # Parse SystemServices data
+        system_services = {}
+        for service_elem in root.findall(".//SystemServices"):
+            services = ['AntiSpam', 'AntiVirus', 'Authentication', 'DHCPServer', 
+                       'DNSServer', 'IPS', 'WebProxy', 'WAF', 'DHCPv6Server']
+            
+            for service in services:
+                service_data = service_elem.find(service)
+                if service_data is not None:
+                    action_elem = service_data.find("Action")
+                    status_elem = service_data.find("Status")
+                    
+                    if action_elem is not None and status_elem is not None:
+                        system_services[f"service_{service.lower()}_action"] = action_elem.text
+                        system_services[f"service_{service.lower()}_status"] = status_elem.text
+                        is_running = status_elem.text == "RUNNING"
+                        system_services[f"service_{service.lower()}_running"] = is_running
+
+        # Parse AdminSettings data
+        admin_settings = {}
+        for admin_elem in root.findall(".//AdminSettings"):
+            hostname_elem = admin_elem.find(".//HostName")
+            if hostname_elem is not None:
+                admin_settings["hostname"] = hostname_elem.text
+            
+            https_port_elem = admin_elem.find(".//HTTPSport")
+            if https_port_elem is not None:
+                admin_settings["https_port"] = https_port_elem.text
+            
+            logout_elem = admin_elem.find(".//LogoutSession")
+            if logout_elem is not None:
+                admin_settings["logout_timeout"] = int(logout_elem.text) if logout_elem.text.isdigit() else None
+            
+            block_login_elem = admin_elem.find(".//BlockLogin")
+            if block_login_elem is not None:
+                admin_settings["block_login_enabled"] = block_login_elem.text == "Enable"
+
+        # Parse BackupRestore data
+        backup_info = {}
+        for backup_elem in root.findall(".//BackupRestore"):
+            schedule_elem = backup_elem.find("ScheduleBackup")
+            if schedule_elem is not None:
+                backup_mode_elem = schedule_elem.find("BackupMode")
+                freq_elem = schedule_elem.find("BackupFrequency")
+                email_elem = schedule_elem.find("EmailAddress")
+                
+                if backup_mode_elem is not None:
+                    backup_info["backup_mode"] = backup_mode_elem.text
+                if freq_elem is not None:
+                    backup_info["backup_frequency"] = freq_elem.text
+                if email_elem is not None:
+                    backup_info["backup_email"] = email_elem.text
+
+        # Parse ATP data
+        atp_status = {}
+        for atp_elem in root.findall(".//ATP"):
+            threat_elem = atp_elem.find("ThreatProtectionStatus")
+            if threat_elem is not None:
+                atp_status["atp_enabled"] = threat_elem.text == "Enable"
+            
+            inspect_elem = atp_elem.find("InspectContent")
+            if inspect_elem is not None:
+                atp_status["atp_inspect_content"] = inspect_elem.text
+
+        # Parse PatternDownload data
+        pattern_info = {}
+        for pattern_elem in root.findall(".//PatternDownload"):
+            auto_elem = pattern_elem.find("AutoUpdate")
+            interval_elem = pattern_elem.find("Interval")
+            
+            if auto_elem is not None:
+                pattern_info["auto_update_enabled"] = auto_elem.text == "On"
+            if interval_elem is not None:
+                pattern_info["update_interval"] = interval_elem.text
+
+        # Parse DHCP data
+        dhcp_info = {}
+        dhcp_options = root.findall(".//DHCP/DHCPOption")
+        dhcp_info["dhcp_options_count"] = len(dhcp_options)
+
+        # Parse DNS data
+        dns_info = {}
+        for dns_elem in root.findall(".//DNS"):
+            ipv4_settings = dns_elem.find("IPv4Settings")
+            if ipv4_settings is not None:
+                dns1_elem = ipv4_settings.find(".//DNS1")
+                dns2_elem = ipv4_settings.find(".//DNS2")
+                
+                if dns1_elem is not None and dns1_elem.text:
+                    dns_info["primary_dns"] = dns1_elem.text
+                if dns2_elem is not None and dns2_elem.text:
+                    dns_info["secondary_dns"] = dns2_elem.text
+
+        # Parse Time data
+        time_info = {}
+        for time_elem in root.findall(".//Time"):
+            tz_elem = time_elem.find("TimeZone")
+            if tz_elem is not None:
+                time_info["timezone"] = tz_elem.text
+
         result["rules"] = rules
         result["groups"] = groups
-        _LOGGER.debug("Total rules parsed: %d, groups parsed: %d", len(rules), len(groups))
+        result["system_health"] = {**system_services, **admin_settings, **atp_status, **pattern_info}
+        result["traffic_stats"] = interface_stats
+        result["interface_details"] = interface_details
+        result["zones"] = zones
+        result["backup_info"] = backup_info
+        result["dhcp_info"] = dhcp_info
+        result["dns_info"] = dns_info
+        result["time_info"] = time_info
+        
         return result
 
     async def test_connection(self) -> bool:
         """Test connection to Sophos Firewall."""
         _LOGGER.info("Testing connection to Sophos Firewall at %s:%s", self.host, self.port)
         try:
-            # Try to detect the correct API format
             self.api_format = await self._detect_api_format()
             _LOGGER.info("Connection test successful! Using API format: %s", self.api_format)
             return True
-            
         except SophosFirewallAPIError as e:
             _LOGGER.error("Sophos API error during connection test: %s", e)
             raise
         except Exception as err:
             _LOGGER.error("Unexpected error during connection test: %s", err)
-            _LOGGER.error("Full traceback: %s", traceback.format_exc())
             raise SophosFirewallAPIError(f"Connection test failed: {err}") from err
 
     async def get_firewall_rules(self) -> list[dict[str, Any]]:
         """Get all firewall rules with group and position information."""
-        # Use the detected API format or default to FirewallRule
         api_format = getattr(self, 'api_format', 'FirewallRule')
         
-        # First get all firewall rules
         xml_request = self._create_xml_request("get", api_format)
         rules_response = await self._make_request(xml_request)
         
-        # Then get firewall rule groups to understand group membership
+        # Get firewall rule groups
         try:
             groups_xml_request = self._create_xml_request("get", "FirewallRuleGroup")
             groups_response = await self._make_request(groups_xml_request)
             
-            # Create a mapping of rules to their groups
             rule_to_group_map = {}
             for group in groups_response.get("groups", []):
                 group_name = group.get("name", "")
                 for rule_name in group.get("rules", []):
                     rule_to_group_map[rule_name] = group_name
             
-            # Add group information to rules
             for rule in rules_response.get("rules", []):
                 rule_name = rule.get("name")
                 if rule_name and rule_name in rule_to_group_map:
@@ -424,30 +559,61 @@ class SophosFirewallAPI:
         except Exception as e:
             _LOGGER.warning("Could not fetch firewall rule groups: %s", e)
         
-        # Store the full rule data for later use in updates
-        self._full_rules_data = {}
-        for rule in rules_response.get("rules", []):
-            if rule.get("name"):
-                self._full_rules_data[rule["name"]] = rule.get("full_xml_data")
-        
         return rules_response.get("rules", [])
 
-    async def get_firewall_rule_groups(self) -> list[dict[str, Any]]:
-        """Get all firewall rule groups."""
-        try:
-            xml_request = self._create_xml_request("get", "FirewallRuleGroup")
-            response = await self._make_request(xml_request)
-            return response.get("groups", [])
-        except Exception as e:
-            _LOGGER.error("Failed to get firewall rule groups: %s", e)
-            return []
+    async def get_all_monitoring_data(self) -> dict[str, Any]:
+        """Get all monitoring data in one call."""
+        _LOGGER.debug("Fetching all monitoring data")
+        
+        rules_data = await self.get_firewall_rules()
+        
+        monitoring_data = {
+            "rules": rules_data,
+            "system_health": {},
+            "traffic_stats": {}, 
+            "interface_details": {},
+            "zones": {},
+            "backup_info": {},
+            "dhcp_info": {},
+            "dns_info": {},
+            "time_info": {},
+        }
+        
+        # Get additional data from various endpoints
+        endpoints_to_try = [
+            ("SystemServices", "system_health"),
+            ("AdminSettings", "system_health"),
+            ("ATP", "system_health"),
+            ("PatternDownload", "system_health"),
+            ("InterfaceStatistics", "traffic_stats"),
+            ("Interface", "interface_details"),
+            ("Zone", "zones"),
+            ("BackupRestore", "backup_info"),
+            ("DHCP", "dhcp_info"),
+            ("DNS", "dns_info"),
+            ("Time", "time_info"),
+        ]
+        
+        for endpoint, data_key in endpoints_to_try:
+            try:
+                xml_request = self._create_xml_request("get", endpoint)
+                response = await self._make_request(xml_request)
+                
+                if data_key == "system_health":
+                    current_data = monitoring_data[data_key]
+                    current_data.update(response.get(data_key, {}))
+                else:
+                    monitoring_data[data_key] = response.get(data_key, {})
+                    
+            except Exception as e:
+                _LOGGER.debug("Could not get %s: %s", endpoint, e)
+        
+        return monitoring_data
 
     async def set_rule_status(self, rule_name: str, enabled: bool) -> bool:
         """Enable or disable a firewall rule while preserving order and group membership."""
         try:
-            # Get the current full rule data and groups
             current_rules = await self.get_firewall_rules()
-            current_groups = await self.get_firewall_rule_groups()
             
             target_rule = None
             for rule in current_rules:
@@ -459,22 +625,12 @@ class SophosFirewallAPI:
                 _LOGGER.error("Rule '%s' not found", rule_name)
                 return False
             
-            # Get the full XML data for this rule
             full_rule_xml = target_rule.get("full_xml_data")
             if not full_rule_xml:
                 _LOGGER.error("No full XML data available for rule '%s'", rule_name)
                 return False
             
-            # Check if rule is in a group and preserve group membership
-            rule_group = target_rule.get("group")
-            if rule_group:
-                _LOGGER.debug("Rule '%s' is in group '%s', preserving group membership", rule_name, rule_group)
-                # Update the rule while preserving group membership
-                xml_request = self._create_update_xml_request_with_group(rule_name, enabled, full_rule_xml, rule_group, current_groups)
-            else:
-                # Update the rule normally (preserving position)
-                xml_request = self._create_update_xml_request(rule_name, enabled, full_rule_xml)
-            
+            xml_request = self._create_update_xml_request(rule_name, enabled, full_rule_xml)
             await self._make_request(xml_request)
             
             _LOGGER.info("Successfully updated rule '%s' to %s", rule_name, "enabled" if enabled else "disabled")
@@ -486,102 +642,26 @@ class SophosFirewallAPI:
 
     def _create_update_xml_request(self, rule_name: str, enabled: bool, full_rule_data: ET.Element) -> str:
         """Create XML request to update a firewall rule preserving all settings."""
-        _LOGGER.debug("Creating update XML request for rule: %s, enabled: %s", rule_name, enabled)
-        
         request = ET.Element("Request")
         
-        # Login section
         login = ET.SubElement(request, "Login")
         ET.SubElement(login, "Username").text = self.username
         ET.SubElement(login, "Password").text = self.password
         
-        # Set section with operation="update"
         set_elem = ET.SubElement(request, "Set")
         set_elem.set("operation", "update")
         
-        # Create a copy of the full rule data
         import copy
         rule_elem = copy.deepcopy(full_rule_data)
         
-        # Update the status in the copied rule
         status_elem = rule_elem.find("Status")
         if status_elem is not None:
             status_elem.text = "Enable" if enabled else "Disable"
         
-        # Ensure the transactionid attribute is preserved or set to empty
         if not rule_elem.get("transactionid"):
             rule_elem.set("transactionid", "")
         
-        # Add the updated rule to the Set element
         set_elem.append(rule_elem)
         
         xml_string = ET.tostring(request, encoding="unicode")
-        _LOGGER.debug("Generated update XML request: %s", xml_string)
         return xml_string
-
-    def _create_update_xml_request_with_group(self, rule_name: str, enabled: bool, full_rule_data: ET.Element, 
-                                            group_name: str, all_groups: list) -> str:
-        """Create XML request to update a firewall rule while preserving group membership."""
-        _LOGGER.debug("Creating update XML request for rule: %s in group: %s, enabled: %s", 
-                      rule_name, group_name, enabled)
-        
-        # Find the group data
-        target_group = None
-        for group in all_groups:
-            if group.get("name") == group_name:
-                target_group = group
-                break
-        
-        if not target_group:
-            _LOGGER.warning("Group '%s' not found, updating rule without group", group_name)
-            return self._create_update_xml_request(rule_name, enabled, full_rule_data)
-        
-        request = ET.Element("Request")
-        
-        # Login section
-        login = ET.SubElement(request, "Login")
-        ET.SubElement(login, "Username").text = self.username
-        ET.SubElement(login, "Password").text = self.password
-        
-        # Set section with operation="update"
-        set_elem = ET.SubElement(request, "Set")
-        set_elem.set("operation", "update")
-        
-        # First update the rule itself
-        import copy
-        rule_elem = copy.deepcopy(full_rule_data)
-        
-        # Update the status in the copied rule
-        status_elem = rule_elem.find("Status")
-        if status_elem is not None:
-            status_elem.text = "Enable" if enabled else "Disable"
-        
-        # Ensure the transactionid attribute is preserved or set to empty
-        if not rule_elem.get("transactionid"):
-            rule_elem.set("transactionid", "")
-        
-        # Add the updated rule to the Set element
-        set_elem.append(rule_elem)
-        
-        # Also update the group to maintain membership
-        group_elem = ET.SubElement(set_elem, "FirewallRuleGroup")
-        group_elem.set("transactionid", target_group.get("transactionid", ""))
-        
-        ET.SubElement(group_elem, "Name").text = group_name
-        
-        description_elem = ET.SubElement(group_elem, "Description")
-        description_elem.text = target_group.get("description", "")
-        
-        # Add all rules in the group (including the updated one)
-        policy_list = ET.SubElement(group_elem, "SecurityPolicyList")
-        for rule_in_group in target_group.get("rules", []):
-            policy_elem = ET.SubElement(policy_list, "SecurityPolicy")
-            policy_elem.text = rule_in_group
-        
-        policy_type_elem = ET.SubElement(group_elem, "Policytype")
-        policy_type_elem.text = target_group.get("policy_type", "User/network rule")
-        
-        xml_string = ET.tostring(request, encoding="unicode")
-        _LOGGER.debug("Generated update XML request with group: %s", xml_string)
-        return xml_string
-        
