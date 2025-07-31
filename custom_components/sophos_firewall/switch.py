@@ -39,8 +39,10 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self._rule_data = rule_data
         self._config_entry = config_entry
-        self._attr_name = f"Firewall Rule: {rule_data['name']}"
+        self._attr_name = f"FWR: {rule_data['name']}"
         self._attr_unique_id = f"sophos_fw_rule_{config_entry.entry_id}_{rule_data['name']}"
+        self._last_known_state = None
+        self._updating = False
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -57,12 +59,20 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self) -> bool:
         """Return true if the switch is on."""
+        # If we're currently updating, return the last known state to prevent flickering
+        if self._updating and self._last_known_state is not None:
+            return self._last_known_state
+        
         # Find current rule data in coordinator
         rules_data = self.coordinator.data.get("rules", [])
         for rule in rules_data:
             if rule["name"] == self._rule_data["name"]:
-                return rule.get("enabled", False)
-        return False
+                current_state = rule.get("enabled", False)
+                self._last_known_state = current_state
+                return current_state
+        
+        # Fallback to last known state if rule not found
+        return self._last_known_state if self._last_known_state is not None else False
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -82,31 +92,79 @@ class SophosFirewallRuleSwitch(CoordinatorEntity, SwitchEntity):
                     "after_rule": rule.get("after_rule", ""),
                     "group": rule.get("group", ""),
                     "rule_name": rule["name"],
+                    "updating": self._updating,
                 }
-        return {}
+        return {"updating": self._updating}
 
     @property
     def icon(self) -> str:
         """Return the icon for the switch."""
+        if self._updating:
+            return "mdi:loading"
         return "mdi:firewall" if self.is_on else "mdi:firewall-off"
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the switch on."""
-        success = await self.coordinator.api.set_rule_status(
-            self._rule_data["name"], True
-        )
-        if success:
-            await self.coordinator.async_request_refresh()
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the switch off."""
-        success = await self.coordinator.api.set_rule_status(
-            self._rule_data["name"], False
-        )
-        if success:
-            await self.coordinator.async_request_refresh()
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the switch on."""
+        await self._async_set_rule_status(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off."""
+        await self._async_set_rule_status(False)
+
+    async def _async_set_rule_status(self, enabled: bool) -> None:
+        """Set the rule status with proper state management."""
+        import asyncio
+        
+        _LOGGER.info("Switch: Setting rule '%s' to %s", self._rule_data["name"], "on" if enabled else "off")
+        
+        # Set updating flag and update UI
+        self._updating = True
+        self.async_write_ha_state()
+        
+        try:
+            # Call the API
+            success = await self.coordinator.api.set_rule_status(
+                self._rule_data["name"], enabled
+            )
+            
+            if success:
+                _LOGGER.info("Switch: API call successful for rule '%s'", self._rule_data["name"])
+                
+                # Wait a bit for the change to propagate
+                await asyncio.sleep(2)
+                
+                # Force a coordinator refresh
+                await self.coordinator.async_request_refresh()
+                
+                # Wait for the refresh to complete
+                await asyncio.sleep(1)
+                
+                # Verify the state change
+                rules_data = self.coordinator.data.get("rules", [])
+                for rule in rules_data:
+                    if rule["name"] == self._rule_data["name"]:
+                        actual_state = rule.get("enabled", False)
+                        if actual_state == enabled:
+                            _LOGGER.info("Switch: State change verified for rule '%s'", self._rule_data["name"])
+                        else:
+                            _LOGGER.warning("Switch: State change not yet reflected for rule '%s' - expected: %s, actual: %s", 
+                                          self._rule_data["name"], enabled, actual_state)
+                            # Try one more refresh after a longer delay
+                            await asyncio.sleep(3)
+                            await self.coordinator.async_request_refresh()
+                        break
+            else:
+                _LOGGER.error("Switch: API call failed for rule '%s'", self._rule_data["name"])
+                
+        except Exception as e:
+            _LOGGER.error("Switch: Error setting rule status for '%s': %s", self._rule_data["name"], e)
+        
+        finally:
+            # Clear updating flag and update UI
+            self._updating = False
+            self.async_write_ha_state()
